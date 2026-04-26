@@ -1,0 +1,52 @@
+# Environment
+.env
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data (raw downloads can be large)
+data/raw/
+data/processed/
+
+# ML model artifacts
+models/ml/saved_models/
+*.pkl
+*.joblib
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs (regenerated)
+data/outputs/
+reports/generated/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

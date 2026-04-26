@@ -79,18 +79,29 @@ Stockinator/
 │   │   ├── comps.py        # Comparable Company Analysis
 │   │   └── rim.py          # Residual Income Model
 │   ├── ensemble.py         # Weighted ensemble combiner
-│   └── ml/                 # ML enhancement (Phase 4)
+│   └── ml/
+│       ├── features.py     # Feature engineering pipeline
+│       ├── train.py        # XGBoost/LightGBM training
+│       ├── predict.py      # ML-adjusted valuations
+│       ├── conformal.py    # Conformal prediction CIs
+│       └── backtest.py     # Backtesting framework
 ├── pipeline/
-│   ├── ingest.py           # yfinance data ingestion
+│   ├── ingest.py           # yfinance data ingestion (with retry/cache)
+│   ├── fred_api.py         # FRED API for live macro data
+│   ├── sp500.py            # S&P 500 universe loader
+│   ├── scheduler.py        # Batch scheduling
 │   ├── data_quality.py     # Validation gates
 │   └── batch_valuation.py  # Batch processing engine
+├── agents/
+│   ├── orchestrator.py     # Groq-powered AI agent
+│   ├── tools.py            # Tool definitions (6 tools)
+│   └── prompts.py          # System prompts
 ├── database/
 │   └── db.py               # SQLite persistence
 ├── reports/
 │   ├── templates/          # Markdown report templates
 │   └── report_generator.py # CSV, JSON, Markdown output
-├── agents/                 # AI Agent layer (Phase 3)
-├── tests/                  # Comprehensive test suite
+├── tests/                  # 9 test modules, 60+ test cases
 ├── config.py               # Central configuration
 ├── main.py                 # CLI entry point
 └── requirements.txt
@@ -98,19 +109,53 @@ Stockinator/
 
 ---
 
+## 🤖 AI Agent Mode
+
+Chat with an AI financial analyst powered by Groq (free tier):
+
+```bash
+# Set your Groq API key
+export GROQ_API_KEY=your_key_here
+
+# Launch interactive mode
+python main.py --agent
+```
+
+The agent can autonomously fetch data, run models, and explain results.
+
+---
+
+## 📅 Scheduling & Universes
+
+```bash
+# Run on top 50 S&P 500 stocks
+python main.py --universe top50
+
+# Run on full S&P 500
+python main.py --universe sp500 --no-peers
+
+# Schedule every 24 hours on test tickers
+python main.py --schedule 24
+```
+
+---
+
 ## 🧪 Running Tests
 
 ```bash
+source .venv/bin/activate
 pytest tests/ -v
 ```
 
 ---
 
-## 📊 Data Source
+## 📊 Data Sources
 
-**Phase 1**: [yfinance](https://github.com/ranaroussi/yfinance) — free, no API key required, real-time data.
-
-**Phase 2+**: FMP API, FRED API for production-grade data.
+| Source | Phase | Cost | Data |
+|--------|-------|------|------|
+| yfinance | 1+ | Free | Fundamentals, prices, peers |
+| FRED API | 2+ | Free | Risk-free rate, yield spread, GDP |
+| Groq | 3+ | Free tier | AI analysis agent |
 
 ---
 
@@ -131,7 +176,7 @@ This is an automated valuation engine for **educational and research purposes**.
 ## 🗺️ Roadmap
 
 - [x] **Phase 1**: Core valuation engine (GGM, DCF, Comps, RIM) + yfinance
-- [ ] **Phase 2**: Live API integration (FMP, FRED)
-- [ ] **Phase 3**: AI Agent layer (Groq-powered autonomous valuation)
-- [ ] **Phase 4**: ML enhancement (XGBoost ensemble, conformal prediction)
-- [ ] **Phase 5**: Vite web dashboard + production pipeline# Stockinator
+- [x] **Phase 2**: Enhanced pipeline (FRED API, retry/cache, S&P 500 universe)
+- [x] **Phase 3**: AI Agent layer (Groq-powered autonomous valuation)
+- [x] **Phase 4**: ML enhancement (XGBoost, feature engineering, backtesting)
+- [ ] **Phase 5**: Vite web dashboard + production pipeline
