@@ -24,9 +24,19 @@ export default function StockCard({ result, onClick }) {
   const allValues = modelEntries.map(m => m.value).filter(Boolean)
   const maxVal = Math.max(...allValues, market_price || 0, ensembleValue || 0)
 
+  const getCurrencySymbol = (t) => {
+    if (!t) return '$'
+    if (t.endsWith('.NS') || t.endsWith('.BO')) return '₹'
+    if (t.endsWith('.L')) return '£'
+    if (t.endsWith('.TO')) return 'CA$'
+    if (t.match(/\.(DE|PA|MI|AS|MC)$/)) return '€'
+    return '$'
+  }
+  const currency = getCurrencySymbol(ticker)
+
   const formatPrice = (v) => {
     if (v == null) return '—'
-    return '$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return currency + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
   const formatMos = (v) => {

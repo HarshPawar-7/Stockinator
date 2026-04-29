@@ -13,9 +13,19 @@ export default function DetailModal({ result, onClose }) {
     return () => window.removeEventListener('keydown', handler)
   }, [onClose])
 
+  const getCurrencySymbol = (t) => {
+    if (!t) return '$'
+    if (t.endsWith('.NS') || t.endsWith('.BO')) return '₹'
+    if (t.endsWith('.L')) return '£'
+    if (t.endsWith('.TO')) return 'CA$'
+    if (t.match(/\.(DE|PA|MI|AS|MC)$/)) return '€'
+    return '$'
+  }
+  const currency = getCurrencySymbol(ticker)
+
   const formatPrice = (v) => {
     if (v == null) return '—'
-    return '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return currency + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
   const formatPct = (v) => {
