@@ -2,8 +2,9 @@
  * DetailModal — Full valuation breakdown for a selected stock
  */
 import { useEffect } from 'react'
+import TradingViewChart from './TradingViewChart'
 
-export default function DetailModal({ result, onClose }) {
+export default function DetailModal({ result, theme, onClose }) {
   const { ticker, company_name, market_price, ensemble = {}, models = {}, inputs = {}, data_quality = {} } = result
 
   // Close on Escape
@@ -60,6 +61,9 @@ export default function DetailModal({ result, onClose }) {
           </div>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
+
+        {/* TradingView Chart */}
+        <TradingViewChart ticker={ticker} theme={theme} />
 
         {/* Summary */}
         <table className="detail-table">

@@ -226,6 +226,7 @@ export default function App() {
       {selectedResult && (
         <DetailModal
           result={selectedResult}
+          theme={theme}
           onClose={() => setSelectedResult(null)}
         />
       )}
