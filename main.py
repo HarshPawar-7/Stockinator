@@ -17,15 +17,16 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
+import json
 import logging
 import sys
 import time
+import asyncio
+import argparse
 
 from config import TEST_TICKERS
 from pipeline.batch_valuation import run_batch_valuation, valuate_single_stock
 from reports.report_generator import save_reports, generate_markdown_report
-from database.db import init_db, save_batch
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -90,7 +91,10 @@ def print_summary(results: list[dict]) -> None:
     print()
 
 
-def main():
+async def run_cli():
+    from config import validate_env
+    validate_env()
+
     parser = argparse.ArgumentParser(
         description="Stockinator — ML-Based Stock Valuation Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -192,8 +196,19 @@ Examples:
 
     start_time = time.time()
 
+    # ── Init Cache and DB ──────────────────────────────────────────
+    from pipeline.cache import init_redis, close_redis
+    from database.db import get_db_pool
+    await init_redis()
+    pool = None
+    if not args.no_save:
+        try:
+            pool = await get_db_pool()
+        except Exception as e:
+            logger.error("DB Pool init failed: %s", e)
+
     # ── Run Valuation ──────────────────────────────────────────────
-    results = run_batch_valuation(
+    results = await run_batch_valuation(
         tickers=tickers,
         fetch_peers=not args.no_peers,
     )
@@ -205,16 +220,20 @@ Examples:
     print(f"⏱️  Completed in {elapsed:.1f}s\n")
 
     # ── Save Results ───────────────────────────────────────────────
-    if not args.no_save:
+    if not args.no_save and pool:
         # Database
         try:
-            conn = init_db()
-            save_batch(conn, results)
-            conn.close()
+            from database.db import save_batch
+            await save_batch(pool, results)
             logger.info("Results saved to database")
         except Exception as e:
             logger.error("Database save failed: %s", e)
+        finally:
+            await pool.close()
 
+    await close_redis()
+
+    if not args.no_save:
         # Reports
         try:
             saved_files = save_reports(results)
@@ -226,6 +245,9 @@ Examples:
 
     print("\n✅ Done! Not investment advice.\n")
 
+
+def main():
+    asyncio.run(run_cli())
 
 if __name__ == "__main__":
     main()

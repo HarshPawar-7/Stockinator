@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from datetime import date
 
 from config import TERMINAL_GROWTH_RATE
@@ -23,7 +24,7 @@ from pipeline.data_quality import validate_stock_data, validate_model_outputs
 logger = logging.getLogger(__name__)
 
 
-def valuate_single_stock(ticker: str, fetch_peers: bool = True) -> dict:
+async def valuate_single_stock(ticker: str, fetch_peers: bool = True) -> dict:
     """
     Run full valuation pipeline for a single stock.
 
@@ -46,7 +47,7 @@ def valuate_single_stock(ticker: str, fetch_peers: bool = True) -> dict:
     logger.info("=" * 60)
 
     # ── Step 1: Fetch data ─────────────────────────────────────────
-    data = fetch_stock_data(ticker)
+    data = await fetch_stock_data(ticker)
     all_warnings = list(data.warnings)
 
     # ── Step 2: Data quality checks ────────────────────────────────
@@ -114,7 +115,7 @@ def valuate_single_stock(ticker: str, fetch_peers: bool = True) -> dict:
     comps_result = None
     comps_value = None
     if fetch_peers and data.sector:
-        peer_data = fetch_peer_data(
+        peer_data = await fetch_peer_data(
             ticker=ticker,
             sector=data.sector,
             industry=data.industry,
@@ -224,15 +225,30 @@ def valuate_single_stock(ticker: str, fetch_peers: bool = True) -> dict:
         ensemble.valid_model_count, 4,
     )
 
+    # ── Step 6: ML Enrichment (optional, non-blocking) ────────────────
+    try:
+        from models.ml.predict import predict as ml_predict
+        result["ml"] = ml_predict(result)
+        if result["ml"].get("ml_available"):
+            logger.info(
+                "ML [%s]: adjusted=$%s | ml_signal=%s",
+                ticker,
+                result["ml"].get("ml_adjusted_value"),
+                result["ml"].get("ml_signal"),
+            )
+    except Exception as e:
+        logger.debug("ML enrichment skipped for %s: %s", ticker, e)
+        result["ml"] = {"ml_available": False}
+
     return result
 
 
-def run_batch_valuation(
+async def run_batch_valuation(
     tickers: list[str],
     fetch_peers: bool = True,
 ) -> list[dict]:
     """
-    Run valuation pipeline on a list of tickers.
+    Run valuation pipeline on a list of tickers concurrently.
 
     Args:
         tickers: List of ticker symbols
@@ -241,21 +257,20 @@ def run_batch_valuation(
     Returns:
         List of valuation result dicts
     """
-    results = []
-    total = len(tickers)
-
-    for i, ticker in enumerate(tickers, 1):
-        logger.info("Processing %d/%d: %s", i, total, ticker)
+    logger.info("Starting batch valuation for %d tickers concurrently...", len(tickers))
+    
+    async def safe_valuate(ticker: str):
         try:
-            result = valuate_single_stock(ticker, fetch_peers=fetch_peers)
-            results.append(result)
+            return await valuate_single_stock(ticker, fetch_peers=fetch_peers)
         except Exception as e:
             logger.error("FAILED %s: %s", ticker, e, exc_info=True)
-            results.append({
+            return {
                 "ticker": ticker,
                 "valuation_date": date.today().isoformat(),
                 "ensemble": {"signal": "ERROR", "ensemble_value": None},
                 "error": str(e),
-            })
+            }
 
+    tasks = [safe_valuate(t) for t in tickers]
+    results = await asyncio.gather(*tasks)
     return results

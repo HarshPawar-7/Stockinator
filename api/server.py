@@ -22,9 +22,14 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from api.auth import verify_api_key
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -36,6 +41,10 @@ app = FastAPI(
     description="ML-Based Stock Valuation Platform",
     version="1.0.0",
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS — allow frontend dev server
 app.add_middleware(
@@ -53,6 +62,13 @@ class ValuationRequest(BaseModel):
     tickers: list[str]
     include_peers: bool = True
 
+    @field_validator("tickers")
+    @classmethod
+    def limit_tickers(cls, v):
+        if len(v) > 10:
+            raise ValueError("Maximum 10 tickers per request")
+        return [t.upper().strip() for t in v]
+
 class AgentRequest(BaseModel):
     message: str
 
@@ -62,15 +78,39 @@ class AgentResponse(BaseModel):
 
 # ── Endpoints ──────────────────────────────────────────────────────
 
+@app.on_event("startup")
+async def startup():
+    from config import validate_env
+    from database.db import get_db_pool
+    from pipeline.cache import init_redis
+    validate_env()
+    try:
+        app.state.db = await get_db_pool()
+    except Exception as e:
+        logger.warning(f"Failed to connect to Postgres. Running without DB: {e}")
+        app.state.db = None
+    await init_redis()
+
+@app.on_event("shutdown")
+async def shutdown():
+    from pipeline.cache import close_redis
+    if getattr(app.state, 'db', None):
+        await app.state.db.close()
+    await close_redis()
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "stockinator"}
 
 
-@app.post("/api/valuate")
-def valuate_stocks(req: ValuationRequest):
+@app.post("/api/valuate", dependencies=[Security(verify_api_key)])
+@limiter.limit("10/minute")
+async def valuate_stocks(request: Request, req: ValuationRequest):
     """Run valuation on multiple tickers."""
     from pipeline.batch_valuation import run_batch_valuation
+    from database.db import save_batch
+    import asyncio
 
     if not req.tickers:
         raise HTTPException(400, "No tickers provided")
@@ -81,7 +121,9 @@ def valuate_stocks(req: ValuationRequest):
     tickers = [t.strip().upper() for t in req.tickers if t.strip()]
 
     try:
-        results = run_batch_valuation(tickers=tickers, fetch_peers=req.include_peers)
+        results = await run_batch_valuation(tickers=tickers, fetch_peers=req.include_peers)
+        if getattr(request.app.state, 'db', None):
+            asyncio.create_task(save_batch(request.app.state.db, results))
         return {"results": results, "count": len(results)}
     except Exception as e:
         logger.error("Valuation failed: %s", e, exc_info=True)
@@ -89,13 +131,17 @@ def valuate_stocks(req: ValuationRequest):
 
 
 @app.get("/api/valuate/{ticker}")
-def valuate_single(ticker: str, include_peers: bool = True):
+async def valuate_single(request: Request, ticker: str, include_peers: bool = True):
     """Run valuation on a single stock."""
     from pipeline.batch_valuation import valuate_single_stock
+    from database.db import save_valuation
+    import asyncio
 
     ticker = ticker.strip().upper()
     try:
-        result = valuate_single_stock(ticker, fetch_peers=include_peers)
+        result = await valuate_single_stock(ticker, fetch_peers=include_peers)
+        if getattr(request.app.state, 'db', None):
+            asyncio.create_task(save_valuation(request.app.state.db, result))
         return result
     except Exception as e:
         logger.error("Valuation failed for %s: %s", ticker, e, exc_info=True)
@@ -103,37 +149,28 @@ def valuate_single(ticker: str, include_peers: bool = True):
 
 
 @app.get("/api/history")
-def get_history(limit: int = 50):
+async def get_history(request: Request, limit: int = 50):
     """Get recent valuations from the database."""
-    from database.db import init_db
-    import sqlite3
-    import json
+    from database.db import get_all_latest
 
     try:
-        db_path = Path(__file__).parent.parent / "stockinator.db"
-        if not db_path.exists():
-            return {"valuations": [], "count": 0}
-
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            "SELECT * FROM valuations ORDER BY created_at DESC LIMIT ?",
-            (limit,)
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
+        pool = getattr(request.app.state, 'db', None)
+        if not pool:
+            return {"valuations": [], "count": 0, "warning": "Database disabled"}
+        rows = await get_all_latest(pool)
         return {"valuations": rows, "count": len(rows)}
     except Exception as e:
         logger.error("History fetch failed: %s", e)
         return {"valuations": [], "count": 0, "error": str(e)}
 
 
-@app.post("/api/agent")
-def agent_chat(req: AgentRequest):
+@app.post("/api/agent", dependencies=[Security(verify_api_key)])
+@limiter.limit("5/minute")
+async def agent_chat(request: Request, req: AgentRequest):
     """Send a message to the AI agent."""
     try:
         from agents.orchestrator import run_agent
-        response = run_agent(req.message, verbose=False)
+        response = await run_agent(req.message, verbose=False)
         return AgentResponse(response=response)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -161,10 +198,10 @@ def get_macro():
 
 
 @app.get("/api/sp500")
-def get_sp500(source: str = "fallback"):
+async def get_sp500(source: str = "auto"):
     """Get S&P 500 ticker list."""
     from pipeline.sp500 import load_sp500_tickers
-    tickers = load_sp500_tickers(source=source)
+    tickers = await load_sp500_tickers(source=source)
     return {"tickers": tickers, "count": len(tickers)}
 
 

@@ -1,22 +1,21 @@
 """
-SQLite Database — Schema & Operations
+PostgreSQL Database — Schema & Operations
 
 Persistent storage for fundamentals, valuations, and macro data.
-SQLite used throughout (lightweight, zero-config, file-based).
+Uses asyncpg for high-performance async database operations.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import sqlite3
+import os
+import asyncpg
 from datetime import date
-from pathlib import Path
-
-from config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS fundamentals (
@@ -67,85 +66,107 @@ CREATE TABLE IF NOT EXISTS macro (
 """
 
 
-def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Initialize database and create tables if needed."""
-    path = str(db_path or DB_PATH)
-    conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(SCHEMA_SQL)
-    conn.commit()
-    logger.info("Database initialized at %s", path)
-    return conn
+async def get_db_pool() -> asyncpg.Pool:
+    """Initialize database pool and create tables if needed."""
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL environment variable is not set.")
+    
+    pool = await asyncpg.create_pool(DATABASE_URL)
+    
+    async with pool.acquire() as conn:
+        await conn.execute(SCHEMA_SQL)
+        
+    logger.info("PostgreSQL Database pool initialized")
+    return pool
 
 
-def save_valuation(conn: sqlite3.Connection, result: dict) -> None:
+async def save_valuation(pool: asyncpg.Pool, result: dict) -> None:
     """Save a single valuation result to the database."""
     ensemble = result.get("ensemble", {})
     models = result.get("models", {})
 
-    conn.execute(
-        """INSERT OR REPLACE INTO valuations
-           (ticker, valuation_date, price, ggm_value, dcf_value, comps_value,
-            rim_value, ensemble_value, ci_lower_95, ci_upper_95,
-            margin_safety, signal, model_flags, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
+    query = """
+        INSERT INTO valuations
+        (ticker, valuation_date, price, ggm_value, dcf_value, comps_value,
+         rim_value, ensemble_value, ci_lower_95, ci_upper_95,
+         margin_safety, signal, model_flags, raw_json)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ON CONFLICT (ticker, valuation_date) DO UPDATE SET
+            price = EXCLUDED.price,
+            ggm_value = EXCLUDED.ggm_value,
+            dcf_value = EXCLUDED.dcf_value,
+            comps_value = EXCLUDED.comps_value,
+            rim_value = EXCLUDED.rim_value,
+            ensemble_value = EXCLUDED.ensemble_value,
+            ci_lower_95 = EXCLUDED.ci_lower_95,
+            ci_upper_95 = EXCLUDED.ci_upper_95,
+            margin_safety = EXCLUDED.margin_safety,
+            signal = EXCLUDED.signal,
+            model_flags = EXCLUDED.model_flags,
+            raw_json = EXCLUDED.raw_json
+    """
+    
+    val_date = result.get("valuation_date")
+    if isinstance(val_date, str):
+        val_date = date.fromisoformat(val_date)
+
+    ci = ensemble.get("ci_95") or [None, None]
+    
+    async with pool.acquire() as conn:
+        await conn.execute(
+            query,
             result.get("ticker"),
-            result.get("valuation_date"),
+            val_date,
             result.get("market_price"),
             models.get("ggm", {}).get("value"),
             models.get("dcf", {}).get("value"),
             models.get("comps", {}).get("value"),
             models.get("rim", {}).get("value"),
             ensemble.get("ensemble_value"),
-            ensemble.get("ci_95", [None, None])[0] if ensemble.get("ci_95") else None,
-            ensemble.get("ci_95", [None, None])[1] if ensemble.get("ci_95") else None,
+            ci[0],
+            ci[1],
             ensemble.get("margin_of_safety"),
             ensemble.get("signal"),
             json.dumps(ensemble.get("warnings", [])),
             json.dumps(result),
-        ),
-    )
-    conn.commit()
+        )
 
 
-def save_batch(conn: sqlite3.Connection, results: list[dict]) -> None:
+async def save_batch(pool: asyncpg.Pool, results: list[dict]) -> None:
     """Save a batch of valuation results."""
     for result in results:
         try:
-            save_valuation(conn, result)
+            await save_valuation(pool, result)
         except Exception as e:
             logger.error("Failed to save %s: %s", result.get("ticker"), e)
 
 
-def get_latest_valuation(conn: sqlite3.Connection, ticker: str) -> dict | None:
+async def get_latest_valuation(pool: asyncpg.Pool, ticker: str) -> dict | None:
     """Get most recent valuation for a ticker."""
-    cursor = conn.execute(
-        "SELECT raw_json FROM valuations WHERE ticker=? ORDER BY valuation_date DESC LIMIT 1",
-        (ticker,),
-    )
-    row = cursor.fetchone()
-    return json.loads(row[0]) if row else None
+    query = "SELECT raw_json FROM valuations WHERE ticker=$1 ORDER BY valuation_date DESC LIMIT 1"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, ticker)
+        return json.loads(row["raw_json"]) if row else None
 
 
-def get_all_latest(conn: sqlite3.Connection) -> list[dict]:
+async def get_all_latest(pool: asyncpg.Pool) -> list[dict]:
     """Get the latest valuation for all tickers."""
-    cursor = conn.execute("""
-        SELECT raw_json FROM valuations v
+    query = """
+        SELECT v.raw_json FROM valuations v
         INNER JOIN (
             SELECT ticker, MAX(valuation_date) as max_date
             FROM valuations GROUP BY ticker
         ) latest ON v.ticker = latest.ticker AND v.valuation_date = latest.max_date
         ORDER BY v.ticker
-    """)
-    return [json.loads(row[0]) for row in cursor.fetchall()]
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query)
+        return [json.loads(row["raw_json"]) for row in rows]
 
 
-def get_history(conn: sqlite3.Connection, ticker: str, limit: int = 30) -> list[dict]:
+async def get_history(pool: asyncpg.Pool, ticker: str, limit: int = 30) -> list[dict]:
     """Get valuation history for a ticker."""
-    cursor = conn.execute(
-        "SELECT raw_json FROM valuations WHERE ticker=? ORDER BY valuation_date DESC LIMIT ?",
-        (ticker, limit),
-    )
-    return [json.loads(row[0]) for row in cursor.fetchall()]
+    query = "SELECT raw_json FROM valuations WHERE ticker=$1 ORDER BY valuation_date DESC LIMIT $2"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, ticker, limit)
+        return [json.loads(row["raw_json"]) for row in rows]

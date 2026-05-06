@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 
 from agents.tools import TOOL_SCHEMAS, dispatch_tool
 from agents.prompts import SYSTEM_PROMPT, VALUATION_REQUEST_PROMPT, COMPARISON_PROMPT
@@ -33,15 +34,33 @@ def _get_groq_client():
             "Then add it to your .env file: GROQ_API_KEY=your_key_here"
         )
     try:
-        from groq import Groq
-        return Groq(api_key=GROQ_API_KEY)
+        from groq import AsyncGroq
+        return AsyncGroq(api_key=GROQ_API_KEY)
     except ImportError:
         raise ImportError(
             "groq package not installed. Run: pip install groq"
         )
 
 
-def run_agent(
+def sanitize_user_input(raw: str) -> str:
+    """Reject inputs matching known injection patterns."""
+    INJECTION_PATTERNS = [
+        r"ignore (previous|above|all) instructions",
+        r"you are now",
+        r"act as",
+        r"disregard",
+        r"drop table",
+        r"reveal (api key|secret|password)",
+    ]
+    lowered = raw.lower()
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, lowered):
+            raise ValueError("Input contains disallowed content.")
+    # Strip control characters
+    return re.sub(r"[\x00-\x1f\x7f]", "", raw).strip()[:2000]
+
+
+async def run_agent(
     user_message: str,
     model: str = DEFAULT_MODEL,
     verbose: bool = False,
@@ -64,15 +83,17 @@ def run_agent(
     """
     client = _get_groq_client()
 
+    sanitized_message = sanitize_user_input(user_message)
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
+        {"role": "user", "content": sanitized_message},
     ]
 
     for round_num in range(1, MAX_TOOL_ROUNDS + 1):
         logger.info("Agent round %d...", round_num)
 
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=messages,
             tools=TOOL_SCHEMAS,
@@ -131,7 +152,7 @@ def run_agent(
     return messages[-1].get("content", "Analysis incomplete — max tool rounds reached.")
 
 
-def valuate_stock(ticker: str, verbose: bool = False) -> str:
+async def valuate_stock(ticker: str, verbose: bool = False) -> str:
     """
     Convenience function: run full valuation for a single stock.
 
@@ -143,10 +164,10 @@ def valuate_stock(ticker: str, verbose: bool = False) -> str:
         Formatted analysis string
     """
     prompt = VALUATION_REQUEST_PROMPT.format(ticker=ticker)
-    return run_agent(prompt, verbose=verbose)
+    return await run_agent(prompt, verbose=verbose)
 
 
-def compare_stocks(tickers: list[str], verbose: bool = False) -> str:
+async def compare_stocks(tickers: list[str], verbose: bool = False) -> str:
     """
     Convenience function: compare multiple stocks.
 
@@ -158,7 +179,7 @@ def compare_stocks(tickers: list[str], verbose: bool = False) -> str:
         Formatted comparison analysis
     """
     prompt = COMPARISON_PROMPT.format(tickers=", ".join(tickers))
-    return run_agent(prompt, verbose=verbose)
+    return await run_agent(prompt, verbose=verbose)
 
 
 def chat(verbose: bool = False) -> None:
@@ -193,7 +214,8 @@ def chat(verbose: bool = False) -> None:
 
         print("\n🔄 Analyzing...\n")
         try:
-            response = run_agent(user_input, verbose=verbose)
+            import asyncio
+            response = asyncio.run(run_agent(user_input, verbose=verbose))
             print(f"\n📊 Stockinator:\n{response}\n")
         except ValueError as e:
             print(f"\n❌ {e}\n")

@@ -73,6 +73,47 @@ def _compute_signal(mos: float, high_disagreement: bool) -> str:
         return "HOLD"
 
 
+def _compute_ci(
+    model_values: "np.ndarray",
+    ensemble_value: float,
+    n_bootstrap: int = 500,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """
+    Compute a bootstrap percentile CI from the spread of valid model values.
+
+    Bootstraps by resampling with replacement from the model values array,
+    producing a (1-alpha) confidence interval around the ensemble mean.
+    Bounded below by 10% under the minimum model value.
+
+    Args:
+        model_values: Array of valid model intrinsic values
+        ensemble_value: The weighted ensemble estimate
+        n_bootstrap: Number of bootstrap samples
+        alpha: Significance level (0.05 → 95% CI)
+
+    Returns:
+        (ci_lower, ci_upper) tuple
+    """
+    if len(model_values) < 2:
+        # Fallback: ±20% if only one model
+        return ensemble_value * 0.80, ensemble_value * 1.20
+
+    rng = np.random.default_rng(seed=42)
+    boot_means = np.array([
+        np.mean(rng.choice(model_values, size=len(model_values), replace=True))
+        for _ in range(n_bootstrap)
+    ])
+
+    ci_lower = float(np.percentile(boot_means, (alpha / 2) * 100))
+    ci_upper = float(np.percentile(boot_means, (1 - alpha / 2) * 100))
+
+    # Hard floor: never go below 90% of the minimum model output
+    ci_lower = max(ci_lower, float(np.min(model_values)) * 0.90)
+
+    return ci_lower, ci_upper
+
+
 def weighted_ensemble(
     ticker: str,
     ggm_value: float | None,
@@ -155,11 +196,10 @@ def weighted_ensemble(
             f"widen CI, reduce position sizing"
         )
 
-    # ── Confidence Interval (bootstrap-style for Phase 1) ──────────
-    # Use ±1.96×std as approximate 95% CI, bounded by model range
-    ci_half = 1.96 * std_val
-    ci_lower = max(ensemble_value - ci_half, min(values_arr) * 0.9)
-    ci_upper = ensemble_value + ci_half
+    # ── Confidence Interval ────────────────────────────────────────────────
+    # Use bootstrap-style percentile CI based on the spread of valid model values.
+    # This is more honest than ±1.96σ since model values are not normally distributed.
+    ci_lower, ci_upper = _compute_ci(values_arr, ensemble_value)
 
     # ── Margin of Safety & Signal ──────────────────────────────────
     mos = None

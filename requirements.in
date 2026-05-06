@@ -25,3 +25,11 @@ uvicorn>=0.22
 
 # ─── Testing ──────────────────────────────────────────────────────
 pytest>=7.0
+
+# ─── New Dependencies ───
+httpx>=0.25
+pip-tools
+slowapi>=0.1.9
+asyncpg
+redis
+mlflow

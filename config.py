@@ -25,8 +25,25 @@ DB_PATH = PROJECT_ROOT / os.getenv("DB_PATH", "stockinator.db")
 for d in [RAW_DATA_DIR, PROCESSED_DATA_DIR, OUTPUT_DIR, REPORTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# ── API Keys (Phase 2+) ────────────────────────────────────────────
+# ── API Keys & Validation ──────────────────────────────────────────
+REQUIRED_ENV_VARS = [
+    "FMP_API_KEY",
+    "ALPHA_VANTAGE_KEY",
+    "API_KEYS",
+    "DATABASE_URL",
+    "REDIS_URL",
+]
+
+def validate_env():
+    missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+    if missing:
+        raise EnvironmentError(
+            f"STARTUP FAILED. Missing required environment variables:\n"
+            + "\n".join(f"  - {v}" for v in missing)
+        )
+
 FMP_API_KEY = os.getenv("FMP_API_KEY")
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 FRED_API_KEY = os.getenv("FRED_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
