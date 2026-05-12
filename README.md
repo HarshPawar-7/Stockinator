@@ -6,6 +6,8 @@ Determines the **intrinsic value** of publicly traded stocks using multiple valu
 
 ---
 
+Readines - 3/4
+
 ## 🧠 How It Works
 
 Stockinator runs **4 independent valuation models** and combines them via an **ensemble** to produce a final intrinsic value:
